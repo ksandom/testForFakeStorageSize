@@ -12,7 +12,12 @@ function private_assertConfig
 
 function listTests # List the configured tests.
 {
-    private_listTests | column -t -s"$tab"
+    private_listTests | private_columns
+}
+
+function private_columns
+{
+    column -t -s"$tab"
 }
 
 function private_listTests
@@ -84,19 +89,35 @@ function runTest # Run a specified test. Syntax: --runTest testName
     
     testName="$1"
     configFile="$testDir/$testName"
+    localLog="log/run.log"
     
     . "$testDir/$testName"
     
     now="$(private_now)"
-    testDir="$pathToDeviceToTest/tffss/$now"
+    thisTestDir="$pathToDeviceToTest/tffss/$now"
     
     # Make sure that we have the source sums to compare to.
     private_createSums "$pathToSourceMaterial"
     
-    # Create the structure.
-    mkdir -p "$testDir/"{log,data}
-    cd "$testDir"
+    private_doCopy "$testName" "$thisTestDir"
+    private_testResult "$testName" "$thisTestDir"
+    result="$?"
+    
+    return $result
+}
+
+function private_doCopy
+{
+    testName="$1"
+    thisTestDir="$2"
+    configFile="$testDir/$testName"
     localLog="log/run.log"
+    
+    . "$testDir/$testName"
+    
+    # Create the structure.
+    mkdir -p "$thisTestDir/"{log,data}
+    cd "$thisTestDir"
     touch "$localLog" result
     echo "not complete" > result
     private_log "$localLog" "Prep test $now."
@@ -104,34 +125,95 @@ function runTest # Run a specified test. Syntax: --runTest testName
     
     # Copy test data to the destination.
     private_log "$localLog" "Copy data."
-    rsync -ruv --progress "$pathToSourceMaterial" "$testDir/data"
+    rsync -ruv --progress "$pathToSourceMaterial" "$thisTestDir/data"
+}
+
+function private_testResult
+{
+    testName="$1"
+    thisTestDir="$2"
+    configFile="$testDir/$testName"
+    localLog="log/run.log"
     
-    # Determine checksums.
+    . "$testDir/$testName"
+    
+    # Determine checksums and get stats.
+    private_log "$localLog" "Stats."
+    df -h "$pathToDeviceToTest" | private_logPipe "$localLog"
     private_log "$localLog" "Determine checksums."
     sumsAfterCopy="$(private_now)"
-    private_createSums "$testDir/data" "sums.$sumsAfterCopy"
+    private_createSums "$thisTestDir/data" "sums.$sumsAfterCopy"
+    cd "$thisTestDir"
     
     # Test
     private_log "$localLog" "Perform test."
-    private_testSums "$testDir" "sums.$sumsAfterCopy"
-    result=""
+    private_testSums "$thisTestDir" "sums.$sumsAfterCopy"
+    result="$?"
     
     return $result
 }
 
+function runTestSuitRandom # Run a lot of copies and periodic tests on random copies. Syntax: --runTestSuitRandom testName numberOfCopies testAfterNCopies howManyResultsToTest  Eg --runTestSuitRandom 16TG 10000 100 4
+{
+    testName="$1"
+    numberOfCopies="$2"
+    testAfterNCopies="$3"
+    howManyResultsToTest="$4"
+    
+    . "$testDir/$testName"
+    
+    now="$(private_now)"
+    mkdir -p "$testDir/suiteLogs"
+    suiteLog="$testDir/suiteLogs/runTestSuitRandom-$now.log"
+    
+    let copiesDone=0
+    let copiesUntilTest="$testAfterNCopies"
+    
+    private_log "$suiteLog" "Begin runTestSuitRandom on $testName."
+    while [ "$copiesDone" -lt "$numberOfCopies" ]; do
+        let copiesDone=$copiesDone+1
+        
+        df -h "$pathToDeviceToTest" | private_logPipe "$suiteLog"
+        private_log "$suiteLog" "Begin copy $copiesDone/$numberOfCopies."
+        
+        # Do a copy.
+        thisTestDir="$pathToDeviceToTest/tffss/$now"
+        private_doCopy "$testName" "$thisTestDir"
+        
+        let copiesUntilTest=$copiesUntilTest-1
+        if [ "$copiesUntilTest" -lt 1 ]; then
+            private_log "$suiteLog" "Begin $howManyResultsToTest tests after copy $copiesDone."
+            
+            # Do a test.
+            thingsToTest="$(private_getResultsForTest "$testName" | sort -R | head -n "$howManyResultsToTest")"
+            
+            for thing in $thingsToTest; do
+                if ! private_testResult "$testName" "$thisTestDir"; then
+                    private_log "$suiteLog" "$thing: ##### Fail #####"
+                else
+                    private_log "$suiteLog" "$thing: ##### Pass #####"
+                fi
+            done
+        fi
+    done
+    
+    df -h "$pathToDeviceToTest" | private_logPipe "$suiteLog"
+    private_log "$suiteLog" "End runTestSuitRandom."
+}
+
 function private_testSums
 {
-    testDir="$1"
+    thisTestDir="$1"
     sumsFile="$2"
-    resultFile="$testDir/result"
-    cd "$testDir/data"
+    resultFile="$thisTestDir/result"
+    cd "$thisTestDir/data"
     
     if diff sums "$sumsFile"; then
-        echo "fail" | tee "$resultFile"
-        return 1
-    else
         echo "pass" | tee "$resultFile"
         return 0
+    else
+        echo "fail" | tee "$resultFile"
+        return 1
     fi
 }
 
@@ -156,7 +238,7 @@ function private_logPipe
 
 function private_now
 {
-    date +%Y-%m-%d--%H%M%S
+    date +%Y-%m-%d--%H.%M.%S
 }
 
 function private_createSums
@@ -186,6 +268,74 @@ function deleteTest # Delete an existing test. Syntax: --deleteTest testName
     fi
     
     rm "$configFile"
+}
+
+function listResults # Show the results for a given set of tests. Syntax: --listResults testName
+{
+    if [ "$1" == "" ]; then
+        echo "Not enough parameters. Check the syntax." >&2
+        echo
+        help >&2
+        exit 1
+    fi
+    
+    testName="$1"
+    configFile="$testDir/$testName"
+    
+    . "$testDir/$testName"
+    
+    cd "$pathToDeviceToTest/tffss"
+    
+    private_listResults "$testName" | private_columns
+}
+
+function private_listResults
+{
+    testName="$1"
+    configFile="$testDir/$testName"
+    
+    . "$testDir/$testName"
+    
+    cd "$pathToDeviceToTest/tffss"
+    
+    echo -e "Test result${tab}Passes${tab}Fails${tab}# Tests${tab}Size"
+    while read specificTest; do
+        private_showResultsforListing "$specificTest"
+    done < <(private_getResultsForTest "$testName")
+}
+
+function private_getResultsForTest
+{
+    testName="$1"
+    configFile="$testDir/$testName"
+    
+    . "$testDir/$testName"
+    
+    cd "$pathToDeviceToTest/tffss"
+    
+    ls -1
+}
+
+function private_showResultsforListing
+{
+    let pass=0
+    let fail=0
+    
+    specificTest="$1"
+    
+    while read result; do
+        if diff "$specificTest"/data/sums "$result" > /dev/null; then
+            let pass=$pass+1
+        else
+            let fail=$fail+1
+        fi
+    done < <(ls -1 "$specificTest"/data/sums.* 2>/dev/null)
+    
+    let totalTests=$pass+$fail
+    
+    size="$(du -sh "$specificTest" | awk '{print $1}')"
+    
+    echo "$specificTest$tab$pass$tab$fail$tab$totalTests$tab$size"
 }
 
 
