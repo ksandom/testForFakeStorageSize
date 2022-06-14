@@ -153,7 +153,7 @@ function private_testResult
     return $result
 }
 
-function runTestSuitRandom # Run a lot of copies and periodic tests on random copies. Syntax: --runTestSuitRandom testName numberOfCopies testAfterNCopies howManyResultsToTest  Eg --runTestSuitRandom 16TG 10000 100 4
+function runTestSuiteRandom # Run a lot of copies and periodic tests on random copies. Syntax: --runTestSuiteRandom testName numberOfCopies testAfterNCopies howManyResultsToTest  Eg --runTestSuiteRandom 16TG 10000 100 4
 {
     testName="$1"
     numberOfCopies="$2"
@@ -163,13 +163,16 @@ function runTestSuitRandom # Run a lot of copies and periodic tests on random co
     . "$testDir/$testName"
     
     now="$(private_now)"
-    mkdir -p "$testDir/suiteLogs"
-    suiteLog="$testDir/suiteLogs/runTestSuitRandom-$now.log"
+    mkdir -p "$tffssHome/suiteLogs"
+    suiteLog="$tffssHome/suiteLogs/runTestSuiteRandom-$now.log"
     
     let copiesDone=0
     let copiesUntilTest="$testAfterNCopies"
     
-    private_log "$suiteLog" "Begin runTestSuitRandom on $testName."
+    # Make sure that we have the source sums to compare to.
+    private_createSums "$pathToSourceMaterial"
+    
+    private_log "$suiteLog" "Begin runTestSuiteRandom on $testName."
     while [ "$copiesDone" -lt "$numberOfCopies" ]; do
         let copiesDone=$copiesDone+1
         
@@ -194,11 +197,13 @@ function runTestSuitRandom # Run a lot of copies and periodic tests on random co
                     private_log "$suiteLog" "$thing: ##### Pass #####"
                 fi
             done
+            
+            let copiesUntilTest="$testAfterNCopies"
         fi
     done
     
     df -h "$pathToDeviceToTest" | private_logPipe "$suiteLog"
-    private_log "$suiteLog" "End runTestSuitRandom."
+    private_log "$suiteLog" "End runTestSuiteRandom."
 }
 
 function private_testSums
@@ -254,6 +259,65 @@ function private_createSums
         echo "Creating checksums in $1..."
         md5sum * | grep -v 'sums' | awk '{print $2, $1}' | sort > "$sumsFileName"
     fi
+}
+
+
+function testCopy # Test a copy that has been done. Syntax: --testCopy testName copyName  . Eg --testCopy 16TB 2022-06-10--17.26.18
+{
+    testName="$1"
+    configFile="$testDir/$testName"
+    localLog="log/run.log"
+    
+    . "$testDir/$testName"
+    
+    thisTestDir="$pathToDeviceToTest/tffss/$2"
+    cd "$thisTestDir"
+    
+    private_testResult "$testName" "$thisTestDir"
+}
+
+function testCopyFast # Test just a little bit of the copy that has been done. (Very fast. Confident failure. Not confident success.) Syntax: --testCopyFast testName copyName  . Eg --testCopyFast 16TB 2022-06-10--17.26.18
+{
+    testName="$1"
+    configFile="$testDir/$testName"
+    localLog="log/run.log"
+    
+    . "$testDir/$testName"
+    
+    thisTestDir="$pathToDeviceToTest/tffss/$2"
+    cd "$thisTestDir/data"
+    
+    # TODO Remove this line.
+    cd kubuntu
+    
+    bytesToTest=409600
+    
+    {
+        echo "File${tab}Result${tab}OriginSum${tab}DestinationSum"
+        for file in *; do
+            originSum="$(private_quickSum "$pathToSourceMaterial/$file" "$bytesToTest")"
+            destinationSum="$(private_quickSum "$file" "$bytesToTest")"
+            
+            if [ "$originSum" == "$destinationSum" ]; then
+                result="pass"
+            else
+                result="fail"
+            fi
+            
+            echo "$file${tab}$result${tab}$originSum${tab}$destinationSum"
+        done
+    } | private_columns
+}
+
+function private_quickSum
+{
+    fileName="$1"
+    bytesToTest="$2"
+    
+    {
+        head -c "$bytesToTest" "$fileName"
+        tail -c "$bytesToTest" "$fileName"
+    } | md5sum | awk '{print $1}'
 }
 
 
