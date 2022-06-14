@@ -4,3 +4,7 @@ There are numerous scams where storage is miss-represented so it can be sold as 
 
 This set of tools it to help test that.
 
+## Other tools that may be useful to you
+
+* H2Testw.
+* ChipGenius.
